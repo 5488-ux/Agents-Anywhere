@@ -21,7 +21,7 @@
 - 修复退出登录后迟到的创建响应、后台创建成功时抢占当前页面，以及附件预览的生命周期问题。（[#368](https://github.com/anywhere-labs/Agents-Anywhere/pull/368)）
 - 附件下载失败时，会话里会列出没送到的文件名；正文和其他附件照常发送，即使这条提醒本身发送失败也不影响任务。（[#270](https://github.com/anywhere-labs/Agents-Anywhere/pull/270)）
 - 下载端断开或传输过期后释放上传任务，修复本地文件中转永久阻塞。（[#270](https://github.com/anywhere-labs/Agents-Anywhere/pull/270)）
-- Connector 上报的时间线条目序号超出范围时只拒绝这一条，不再让整个会话之后的消息都存不进数据库；升级前已经积压的条目会排到时间线末尾保存，持续写入失败的会话也不再每秒重试刷屏日志。（PR_LINK）
+- Connector 上报的时间线条目序号超出范围时只拒绝这一条，不再让整个会话之后的消息都存不进数据库；升级前已经积压的条目会排到时间线末尾保存，持续写入失败的会话也不再每秒重试刷屏日志。（[#464](https://github.com/anywhere-labs/Agents-Anywhere/pull/464)）
 
 ### Codex 与 Claude
 
