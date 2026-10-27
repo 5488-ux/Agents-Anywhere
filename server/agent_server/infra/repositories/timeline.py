@@ -5,12 +5,14 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
+from loguru import logger
 from sqlalchemy import case, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from agent_server.core.models import SessionView, TimelineItem, TimelineItemIn
 from agent_server.core.protocol import PROTOCOL_MAX_REVISION
 from agent_server.core.timeline import (
+    TIMELINE_ORDER_SEQ_MAX,
     TimelineBatchWriteResult,
     TimelineItemWriteResult,
     latest_timeline_items_by_id,
@@ -18,6 +20,7 @@ from agent_server.core.timeline import (
     timeline_item_from_runtime_input,
     timeline_item_from_snapshot,
     timeline_item_state_is_unchanged,
+    timeline_order_seq_in_range,
     timeline_snapshot_is_unchanged,
 )
 from agent_server.core.utc import utc_now
@@ -147,6 +150,12 @@ class TimelineRepositoryMixin:
                         or item.updatedSeq >= existing.updatedSeq
                     )
                 ]
+                persistable_items, reordered = await self._storable_order_seqs(
+                    conn,
+                    session_id,
+                    persistable_items,
+                    current_by_id,
+                )
                 changed_items = [
                     item
                     for item in persistable_items
@@ -187,7 +196,66 @@ class TimelineRepositoryMixin:
         return TimelineBatchWriteResult(
             items=tuple(persistable_items),
             changed=bool(changed_items),
+            reordered=reordered,
         )
+
+    async def _storable_order_seqs(
+        self,
+        conn: AsyncConnection,
+        session_id: str,
+        items: list[TimelineItem],
+        current_by_id: dict[str, TimelineItem],
+    ) -> tuple[list[TimelineItem], bool]:
+        """Give pending items whose ``orderSeq`` the table cannot store a valid one.
+
+        Servers before the ingest range check buffered such items, and every
+        new item accepted after one was ordered behind it. They are moved to
+        the end of the durable timeline in their pending order instead of
+        failing the whole flush forever. Caller must hold the timeline lock.
+        """
+
+        unstorable = [
+            item for item in items if not timeline_order_seq_in_range(item.orderSeq)
+        ]
+        if not unstorable:
+            return items, False
+        next_order_seq = max(
+            [await self._max_timeline_order_seq(conn, session_id)]
+            + [
+                item.orderSeq
+                for item in items
+                if timeline_order_seq_in_range(item.orderSeq)
+            ]
+        )
+        replacements: dict[str, int] = {}
+        for item in sorted(
+            unstorable,
+            key=lambda value: (value.orderSeq, value.updatedSeq, value.id),
+        ):
+            existing = current_by_id.get(item.id)
+            if existing is not None:
+                replacements[item.id] = existing.orderSeq
+            else:
+                next_order_seq += 1
+                replacements[item.id] = next_order_seq
+        if next_order_seq > TIMELINE_ORDER_SEQ_MAX:
+            raise OverflowError("timeline orderSeq exceeds the column range")
+        logger.warning(
+            "timeline buffer moved items with unstorable orderSeq session_id={} "
+            "count={} first_item_id={} first_order_seq={} new_order_seqs={}..{}",
+            session_id,
+            len(unstorable),
+            unstorable[0].id,
+            unstorable[0].orderSeq,
+            min(replacements.values()),
+            max(replacements.values()),
+        )
+        return [
+            item.model_copy(update={"orderSeq": replacements[item.id]})
+            if item.id in replacements
+            else item
+            for item in items
+        ], True
 
     @session_revision_fenced
     async def sync_timeline_items(
