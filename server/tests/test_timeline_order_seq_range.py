@@ -4,11 +4,13 @@ A Connector once delivered an item whose ``orderSeq`` looked like a millisecond
 timestamp. The write buffer accepted it, ordered every later new item of the
 session after it, and the sweeper then failed every flush of that session
 forever. These tests pin the ingest check, the repair of items already stuck
-in the shared pending projection, and the sweeper backoff.
+in the shared pending projection, the sweeper backoff, and the session list,
+which flushes the owner's pending sessions first and therefore returned 500.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from typing import Any
@@ -16,6 +18,7 @@ from typing import Any
 import pytest
 from fakeredis import FakeAsyncRedis
 from session_fixtures import create_session_with_project
+from test_backend_mvp import create_connector_and_session, make_client
 
 from agent_server.core.models import TimelineItemIn
 from agent_server.core.timeline import TIMELINE_ORDER_SEQ_MAX
@@ -324,3 +327,71 @@ async def test_sweeper_backs_off_a_session_whose_flush_keeps_failing(tmp_path) -
     finally:
         await buffer.close()
         await store.close()
+
+
+def test_session_list_survives_order_seq_overflow(tmp_path, monkeypatch) -> None:
+    # Keep the sweeper out of the way: GET /sessions must do the flush itself.
+    monkeypatch.setenv("AGENT_SERVER_TIMELINE_FLUSH_INTERVAL_SECONDS", "60")
+    client = make_client(tmp_path)
+    _, access_token, session_id, headers = create_connector_and_session(client)
+    buffer: TimelineWriteBuffer = client.app.state.timeline_write_buffer
+    store: Store = client.app.state.store
+
+    def listed_session_ids() -> list[str]:
+        response = client.get("/sessions", headers=headers)
+        assert response.status_code == 200, response.text
+        return [session["id"] for session in response.json()["sessions"]]
+
+    # A Connector delivering the production value gets a permanent 400 and
+    # nothing reaches the buffer.
+    response = client.post(
+        "/connector/ingest",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={
+            "notifications": [
+                {
+                    "method": "timeline.itemUpsert",
+                    "params": {
+                        "sessionId": session_id,
+                        "item": item_input(
+                            session_id, "stamp", order_seq=TIMESTAMP_ORDER_SEQ
+                        ).model_dump(mode="json"),
+                    },
+                }
+            ]
+        },
+    )
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"]["code"] == "invalid_order_seq"
+    assert asyncio.run(buffer.dirty_session_ids()) == []
+    assert session_id in listed_session_ids()
+
+    # A backlog an older Server left in the buffer no longer breaks the list.
+    asyncio.run(
+        buffer.accept(
+            session_id=session_id,
+            item=item_input(session_id, "durable", order_seq=5),
+        )
+    )
+    asyncio.run(buffer.flush_through(session_id))
+    asyncio.run(
+        buffer.accept(
+            session_id=session_id,
+            item=item_input(session_id, "stamped", order_seq=1),
+        )
+    )
+    assert not buffer._coordinator.distributed
+    pending = buffer._local_pending[session_id]
+    value = json.loads(pending["stamped"])
+    value["orderSeq"] = TIMESTAMP_ORDER_SEQ
+    pending["stamped"] = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    assert asyncio.run(buffer.dirty_session_ids()) == [session_id]
+
+    assert session_id in listed_session_ids()
+    assert asyncio.run(stored_order(store, session_id)) == [
+        ("durable", 5),
+        ("stamped", 6),
+    ]
+    assert asyncio.run(buffer.dirty_session_ids()) == []
