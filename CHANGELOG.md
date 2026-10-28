@@ -4,7 +4,10 @@
 
 ## 未发布
 
-暂无。
+### Web 与 Desktop 界面
+
+- Tokens Anywhere 可以用 Agents Anywhere 账号登录：Web 会先显示「登录 Tokens Anywhere」确认页，确认后才向 Tokens Anywhere 提供名称、邮箱和头像，选「取消」则不提供任何信息。部署者设置 `AGENT_SERVER_TOKENS_ANYWHERE_CLIENT_SECRET` 和 `AGENT_SERVER_TOKENS_ANYWHERE_REDIRECT_URI` 后开启。（PR_LINK）
+- 侧边栏新增 Tokens Anywhere 入口，介绍页可以直接前往获取 API 密钥；不需要时可以在页面上或「设置 → 外观」里隐藏。构建 Web 和 Desktop 时设置 `NEXT_PUBLIC_TOKENS_ANYWHERE_URL` 才会出现这个入口。（PR_LINK）
 
 ## 2.1.0（2026-10-27）
 
