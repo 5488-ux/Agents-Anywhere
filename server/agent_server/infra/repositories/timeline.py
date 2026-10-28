@@ -109,7 +109,7 @@ class TimelineRepositoryMixin:
         source_observed_at: str | None = None,
         mark_read_on_change: bool = False,
     ) -> TimelineBatchWriteResult:
-        """Persist pre-sequenced realtime items without allocating new revisions.
+        """Persist pre-sequenced items, fencing any legacy order repair.
 
         A complete snapshot is a reset fence.  Buffered items accepted before
         that fence must not be able to reintroduce rows removed by the snapshot.
@@ -192,6 +192,18 @@ class TimelineRepositoryMixin:
                         update(sessions_t)
                         .where(sessions_t.c.id == session_id)
                         .values(**session_values)
+                    )
+                if reordered:
+                    # Clients may already have the old positions at the
+                    # accepted watermark. Give the repair a new durable cursor
+                    # and force recovery from earlier cursors to read a snapshot.
+                    # Commit this fence with the repaired rows so an interrupted
+                    # publication remains recoverable after a restart.
+                    repair_seq = await self._bump_session(conn, session_id)
+                    await conn.execute(
+                        update(sessions_t)
+                        .where(sessions_t.c.id == session_id)
+                        .values(timeline_reset_seq=repair_seq)
                     )
         return TimelineBatchWriteResult(
             items=tuple(persistable_items),
@@ -511,23 +523,22 @@ class TimelineRepositoryMixin:
         source_observed_at: str | None = None,
         mark_read_on_change: bool = False,
     ) -> SessionView:
-        async with self._timeline_lock(session_id):
-            async with self._engine.begin() as conn:
-                await update_source_observed_at(
-                    conn,
-                    session_id=session_id,
-                    source_observed_at=source_observed_at,
-                )
-                updated_seq = await self._bump_session(
-                    conn,
-                    session_id,
-                    mark_read=mark_read_on_change,
-                )
-                await conn.execute(
-                    update(sessions_t)
-                    .where(sessions_t.c.id == session_id)
-                    .values(latest_turn_end_seq=updated_seq)
-                )
+        async with self._timeline_lock(session_id), self._engine.begin() as conn:
+            await update_source_observed_at(
+                conn,
+                session_id=session_id,
+                source_observed_at=source_observed_at,
+            )
+            updated_seq = await self._bump_session(
+                conn,
+                session_id,
+                mark_read=mark_read_on_change,
+            )
+            await conn.execute(
+                update(sessions_t)
+                .where(sessions_t.c.id == session_id)
+                .values(latest_turn_end_seq=updated_seq)
+            )
         return await self.get_session(session_id)
 
     @asynccontextmanager

@@ -331,6 +331,12 @@ class TimelineWriteBuffer:
             durable_item_checked = False
             if self._coordinator.distributed and not self._single_instance:
                 shared_existing = await self._pending_item(session_id, item.id)
+                if shared_existing is not None and not timeline_order_seq_in_range(
+                    shared_existing.orderSeq
+                ):
+                    await self._flush_locked(session_id)
+                    await self._seed_lane(session_id, lane)
+                    shared_existing = await self._pending_item(session_id, item.id)
                 if shared_existing is not None:
                     if (
                         existing is None
@@ -359,7 +365,7 @@ class TimelineWriteBuffer:
                 # this process last used the lane. Refresh the shared order head
                 # only for that cross-instance cache case; the initial seed has
                 # already read the same projection and durable max.
-                shared_snapshot = await self._pending_snapshot(session_id)
+                shared_snapshot = await self._storable_pending_snapshot(session_id)
                 lane.latest.update(shared_snapshot.items)
                 self._trim_lane_cache(lane)
                 lane.max_order_seq = _order_head(
@@ -606,15 +612,22 @@ class TimelineWriteBuffer:
             lane.latest.clear()
             lane.max_order_seq = None
             lane.seeded = False
-            next_seq = await self._store.get_session_seq(session_id)
+        next_seq = await self._store.get_session_seq(session_id)
+        published_through = await self._sequences.published_head(session_id)
+        if result.reordered or (
+            not result.items
+            and (published_through is None or published_through < next_seq)
+        ):
+            # A retry after the repair transaction committed can have no
+            # persistable items: its raw pending snapshot predates the reset
+            # fence. Still publish that durable recovery boundary before clear.
+            await self._sequences.floor(session_id, next_seq)
             await self._broker.publish(
                 session_id,
                 {"sessionId": session_id, "nextSeq": next_seq, "refetch": True},
             )
             await self._sequences.mark_published(session_id, next_seq)
         elif result.items:
-            next_seq = await self._store.get_session_seq(session_id)
-            published_through = await self._sequences.published_head(session_id)
             if published_through is None or published_through < next_seq:
                 await self._broker.publish(
                     session_id,
@@ -811,6 +824,17 @@ class TimelineWriteBuffer:
     async def _seed_lane(self, session_id: str, lane: _SessionLane) -> None:
         if lane.seeded:
             return
+        snapshot = await self._storable_pending_snapshot(session_id)
+        lane.latest.update(snapshot.items)
+        self._trim_lane_cache(lane)
+        durable_max_order_seq = await self._store.get_max_timeline_order_seq(session_id)
+        lane.max_order_seq = _order_head(
+            durable_max_order_seq,
+            *(item.orderSeq for item in snapshot.items.values()),
+        )
+        lane.seeded = True
+
+    async def _storable_pending_snapshot(self, session_id: str) -> _PendingSnapshot:
         snapshot = await self._pending_snapshot(session_id)
         if any(
             not timeline_order_seq_in_range(item.orderSeq)
@@ -820,14 +844,7 @@ class TimelineWriteBuffer:
             # is placed after them rather than in front of them.
             await self._flush_locked(session_id)
             snapshot = await self._pending_snapshot(session_id)
-        lane.latest.update(snapshot.items)
-        self._trim_lane_cache(lane)
-        durable_max_order_seq = await self._store.get_max_timeline_order_seq(session_id)
-        lane.max_order_seq = _order_head(
-            durable_max_order_seq,
-            *(item.orderSeq for item in snapshot.items.values()),
-        )
-        lane.seeded = True
+        return snapshot
 
     async def _store_pending(
         self,

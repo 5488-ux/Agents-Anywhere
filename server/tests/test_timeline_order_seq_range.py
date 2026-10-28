@@ -253,7 +253,7 @@ async def test_sweeper_flush_repairs_stuck_items_without_new_traffic(tmp_path) -
         await new_server.flush_all(suppress_errors=True, honor_retry_delay=True)
 
         assert await stored_order(store, session.id) == [("durable", 5), ("stamped", 6)]
-        assert await store.get_session_seq(session.id) == stamped.item.updatedSeq
+        assert await store.get_session_seq(session.id) > stamped.item.updatedSeq
         assert await new_server.dirty_session_ids() == []
         await new_server.close()
     finally:
