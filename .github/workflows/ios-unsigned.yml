@@ -1,0 +1,67 @@
+name: Build unsigned IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 26
+        run: |
+          for app in /Applications/Xcode_26.6.app /Applications/Xcode_26.5.app /Applications/Xcode_26.4.1.app /Applications/Xcode_26.4.app /Applications/Xcode_26.3.app /Applications/Xcode_26.app; do
+            if [ -d "$app" ]; then
+              sudo xcode-select -s "$app/Contents/Developer"
+              echo "selected $app"
+              break
+            fi
+          done
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i iphoneos || true
+
+      - name: Resolve Swift packages
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project "ios/Agents Anywhere/Agents Anywhere.xcodeproj" \
+            -scheme "Agents Anywhere"
+
+      - name: Archive without signing
+        run: |
+          set -o pipefail
+          xcodebuild archive \
+            -project "ios/Agents Anywhere/Agents Anywhere.xcodeproj" \
+            -scheme "Agents Anywhere" \
+            -sdk iphoneos \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath build/AgentsAnywhere.xcarchive \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            | tail -n 120
+
+      - name: Package unsigned IPA
+        run: |
+          set -eux
+          APP_PATH="build/AgentsAnywhere.xcarchive/Products/Applications/Agents Anywhere.app"
+          ls -la "build/AgentsAnywhere.xcarchive/Products/Applications/"
+          rm -rf build/Payload build/AgentsAnywhere-unsigned.ipa
+          mkdir -p build/Payload
+          cp -R "$APP_PATH" build/Payload/
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "build/Payload/Agents Anywhere.app/Info.plist" || true
+          (cd build && zip -qry AgentsAnywhere-unsigned.ipa Payload)
+          ls -lh build/AgentsAnywhere-unsigned.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: AgentsAnywhere-unsigned-ipa
+          path: build/AgentsAnywhere-unsigned.ipa
+          if-no-files-found: error
