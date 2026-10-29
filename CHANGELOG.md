@@ -4,6 +4,10 @@
 
 ## 未发布
 
+### 会话创建与消息交付
+
+- Connector 上报的时间线条目序号超出范围时只拒绝这条上报，同批其他消息照常保存，不再让整个会话之后的消息都存不进数据库；升级前已经积压的条目会按原顺序排到时间线末尾保存，持续写入失败的会话也不再每秒重试刷屏日志。（[#464](https://github.com/anywhere-labs/Agents-Anywhere/pull/464)）
+
 ### Web 与 Desktop 界面
 
 - Tokens Anywhere 可以用 Agents Anywhere 账号登录：Web 会先显示「登录 Tokens Anywhere」确认页，确认后才向 Tokens Anywhere 提供名称、邮箱和头像，选「取消」则不提供任何信息。部署者设置 `AGENT_SERVER_TOKENS_ANYWHERE_CLIENT_SECRET` 和 `AGENT_SERVER_TOKENS_ANYWHERE_REDIRECT_URI` 后开启。（[#470](https://github.com/anywhere-labs/Agents-Anywhere/pull/470)）
@@ -99,7 +103,7 @@
 - 管理页和设置页改为侧栏导航，公告、身份认证、邮件和服务配置各自成页；这两类页面不再加载工作区和推送数据。（[#317](https://github.com/anywhere-labs/Agents-Anywhere/pull/317)）
 - 在主页和管理 / 设置之间切换时，侧栏左右并排滑动。（[#317](https://github.com/anywhere-labs/Agents-Anywhere/pull/317)）
 - 身份认证页按手机和桌面客户端分组，并修正 OAuth 回调地址。（[#317](https://github.com/anywhere-labs/Agents-Anywhere/pull/317)）
-- 有多个供应商时，模型列表按供应商分组，同名模型也能分清来源。（[#411](https://github.com/anywhere-labs/Agents-Anywhere/pull/411)）
+- 有多个供应商时，模型列表按供应商分组，同名模型也能分清来源；从 2.0.x 升级的 Server 也会显示分组，Connector 上报的模型目录不再被当作冲突拒绝。（[#411](https://github.com/anywhere-labs/Agents-Anywhere/pull/411)、[#463](https://github.com/anywhere-labs/Agents-Anywhere/pull/463)）
 - 修复回复已经结束却一直显示「正在工作」。（[#393](https://github.com/anywhere-labs/Agents-Anywhere/pull/393)）
 - 长会话的流式输出更流畅，减少整页重绘和输入卡顿。（[#394](https://github.com/anywhere-labs/Agents-Anywhere/pull/394)）
 - 多个任务并行输出时，侧栏里的项目不再反复跳动。（[#311](https://github.com/anywhere-labs/Agents-Anywhere/pull/311)）
